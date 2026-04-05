@@ -1,0 +1,38 @@
+# .NET / C#
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.nupkg
+*.snupkg
+
+# C / firmware
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+*.map
+build/
+_build/
+
+# Zephyr
+zephyr/
+modules/
+.west/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Generated
+*.g.cs

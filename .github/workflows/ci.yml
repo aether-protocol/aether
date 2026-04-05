@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  spec-lint:
+    name: Spec lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check spec files exist
+        run: |
+          test -f spec/SPEC-v0.1.md || (echo "Missing spec file" && exit 1)
+      - name: Check RFC template exists
+        run: |
+          test -f docs/rfcs/RFC-0000-template.md || (echo "Missing RFC template" && exit 1)
+
+  simulator:
+    name: Simulator build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: |
+          cd sim
+          dotnet build --configuration Release
+      - name: Test
+        run: |
+          cd sim
+          dotnet test --configuration Release --logger "console;verbosity=normal"
+
+  sdk-dotnet:
+    name: .NET SDK build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: |
+          cd sdk/dotnet
+          dotnet build --configuration Release
