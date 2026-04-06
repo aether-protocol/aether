@@ -53,7 +53,7 @@ Aether uses a small, conservative set of well-audited primitives. All are from t
 | Purpose                  | Primitive              | Notes |
 |--------------------------|------------------------|-------|
 | Long-term identity       | Ed25519                | 256-bit, fast sign/verify on constrained hardware |
-| Key exchange             | X25519 (ECDH)          | Ephemeral keypairs per session |
+| Key exchange             | X25519 (ECDH)          | Ephemeral + static keypairs |
 | Key derivation           | HKDF-SHA256            | Derives symmetric keys from ECDH output |
 | Authenticated encryption | AES-256-GCM            | Hardware accelerated on most modern MCUs |
 | Device address           | SHA3-256(pubkey)[0..5] | First 6 bytes = 48-bit address |
@@ -67,12 +67,31 @@ Aether uses a small, conservative set of well-audited primitives. All are from t
 
 ### 4.1 Keypair generation
 
-On first boot, or after a deliberate identity reset, a device generates a fresh Ed25519 keypair using a cryptographically secure RNG. The private key is stored in protected storage and never leaves the device.
+On first boot, or after a deliberate identity reset, a device generates:
+
+- An Ed25519 keypair for identity (signing)
+- An X25519 keypair for authenticated key exchange
 
 ```
 identity_privkey, identity_pubkey = Ed25519.generate()
-device_id = SHA3-256(identity_pubkey)[0:6]   // 48 bits
+static_privkey,   static_pubkey   = X25519.generate()
 ```
+
+The private keys are stored in protected storage and never leave the device.
+
+### 4.1.1 Key binding
+
+The static X25519 key MUST be bound to the identity key using a signature:
+
+```
+binding_sig = Ed25519.sign(identity_privkey, static_pubkey)
+```
+
+This signature proves that the static key belongs to the identity.
+
+It is transmitted during the handshake and verified by the peer.
+
+Without this binding, an attacker could substitute their own DH key and impersonate a device.
 
 ### 4.2 Device ID format
 
@@ -123,11 +142,12 @@ Aether does not define a revocation mechanism at the protocol level. Key revocat
 
 ## 6. Session Handshake
 
-The Aether handshake is based on the Noise Protocol Framework pattern **XX** (mutual authentication, both sides transmit their static public keys). This pattern was chosen because:
+The Aether handshake is based on the Noise Protocol Framework pattern **XX** (mutual authentication with identity protection).
 
-- Both sides authenticate each other (unlike one-sided patterns)
-- Neither side's identity is revealed to passive observers
-- It is well-studied and has multiple independent implementations
+Aether uses:
+
+- X25519 for Diffie-Hellman (ephemeral + static)
+- Ed25519 for identity (signing only)
 
 ### 6.1 Handshake overview
 
@@ -138,61 +158,67 @@ Initiator (I)                                   Responder (R)
   Generate ephemeral keypair (e_I)
   ─── msg1: e_I.pubkey ──────────────────────────>
                                   Generate ephemeral keypair (e_R)
-                                  Compute DH(e_R.priv, e_I.pub) → k1
-  <─── msg2: e_R.pubkey, Enc(k1, identity_pubkey_R) ───
-  
-  Compute DH(e_I.priv, e_R.pub) → k1 (same)
-  Decrypt identity_pubkey_R, verify device_id_R
-  Compute DH(identity_priv_I, e_R.pub) → k2
-  ─── msg3: Enc(k1+k2, identity_pubkey_I) ──────>
-                                  Decrypt identity_pubkey_I, verify device_id_I
-                                  Compute DH(e_R.priv, identity_pub_I) → k2
 
-  Both sides derive session keys:
-  session_key_send, session_key_recv = HKDF(k1 || k2, transcript_hash)
+  <─── msg2: e_R.pubkey,
+              Enc(..., static_pub_R,
+                        identity_pubkey_R,
+                        binding_sig_R) ───
+
+  Decrypt and verify:
+    - binding_sig_R using identity_pubkey_R
+    - device_id_R matches identity_pubkey_R
+
+  ─── msg3: Enc(..., static_pub_I,
+                        identity_pubkey_I,
+                        binding_sig_I) ──────>
+
+                                  Decrypt and verify:
+                                    - binding_sig_I
+                                    - device_id_I
 ```
 
-### 6.2 Handshake message formats
+All encryption and key derivation follow the Noise XX specification exactly.
 
-**msg1** (Initiator → Responder):
-```
-+--------+--------+------- ... -------+
-| type=1 | flags  | e_I.pubkey (32B)  |
-+--------+--------+------- ... -------+
-```
+### 6.2 Handshake message contents
 
-**msg2** (Responder → Initiator):
+**msg1:**
 ```
-+--------+--------+------- ... -------+------- ... --------+------------ ... -----------+
-| type=2 | flags  | e_R.pubkey (32B)  | ciphertext (32+16B)| mac (16B)                  |
-+--------+--------+------- ... -------+------- ... --------+------------ ... -----------+
-ciphertext = AES-256-GCM(key=k1, plaintext=identity_pubkey_R, aad=transcript_hash_so_far)
+e_I.pubkey (32 bytes)
 ```
 
-**msg3** (Initiator → Responder):
+**msg2 (encrypted):**
 ```
-+--------+--------+------- ... --------+------------ ... -----------+
-| type=3 | flags  | ciphertext (32+16B)| mac (16B)                  |
-+--------+--------+------- ... --------+------------ ... -----------+
-ciphertext = AES-256-GCM(key=k1+k2, plaintext=identity_pubkey_I, aad=transcript_hash_so_far)
+static_pub_R    (32 bytes)
+identity_pubkey_R (32 bytes)
+binding_sig_R   (64 bytes)
 ```
 
-### 6.3 Session key derivation
+**msg3 (encrypted):**
+```
+static_pub_I
+identity_pubkey_I
+binding_sig_I
+```
 
-After the handshake, both sides derive two symmetric keys (one per direction) using HKDF:
+### 6.3 Verification rules
+
+Upon receiving msg2 or msg3, the recipient MUST:
+
+1. Verify the binding signature:
 
 ```
-transcript_hash = SHA3-256(msg1 || msg2 || msg3)
-
-key_material = HKDF-SHA256(
-    ikm  = DH_k1 || DH_k2,
-    salt = transcript_hash,
-    info = "aether-v0.1-session"
-)
-
-session_key_I_to_R = key_material[0:32]
-session_key_R_to_I = key_material[32:64]
+Ed25519.verify(identity_pubkey, static_pubkey, binding_sig)
 ```
+
+2. Verify the device ID:
+
+```
+device_id == SHA3-256(identity_pubkey)[0:6]
+```
+
+3. Apply trust policy (Known / Trusted / TOFU)
+
+If any verification fails, the handshake MUST be aborted.
 
 ### 6.4 Handshake failure modes
 
@@ -216,12 +242,17 @@ After a successful handshake, all data frames are encrypted using AES-256-GCM wi
 Nonces are 96-bit values constructed as:
 
 ```
-nonce = session_id (32 bits) || message_counter (64 bits)
+nonce = fixed_iv XOR encode64(message_counter)
 ```
 
-The message counter starts at 0 and increments by 1 for each frame. A device MUST NOT send more than 2^64 frames on a single session key (this limit is theoretical; sessions will be renegotiated long before this).
+Where:
 
-If a received message counter is not greater than the last accepted counter, the frame is silently dropped (replay protection).
+- fixed_iv is a 96-bit per-session value derived from the handshake
+- message_counter is a 64-bit unsigned integer
+
+The message counter starts at 0 and increments by 1 for each frame.
+
+A device MUST NOT reuse a (key, nonce) pair.
 
 ### 7.2 Data frame format
 
@@ -475,10 +506,10 @@ A device may have multiple simultaneous connections, each identified by a (peer_
 ### 6.1 DATA frame
 
 ```
-+--------+-----------+-----------+------------+----------+--- ... ---+---------+
-| Header | src_addr  | dst_addr  | session_id | msg_seq  | ciphertext| tag     |
-| (4B)   | (6B)      | (6B)      | (2B)       | (4B)     | (variable)| (16B)   |
-+--------+-----------+-----------+------------+----------+--- ... ---+---------+
++--------+-----------+-----------+------------+---------------+--- ... ---+---------+
+| Header | src_addr  | dst_addr  | session_id | msg_counter   | ciphertext| tag     |
+| (4B)   | (6B)      | (6B)      | (2B)       |      (8B)     | (variable)| (16B)   |
++--------+-----------+-----------+------------+---------------+--- ... ---+---------+
 ```
 
 **msg_seq** — monotonically increasing 32-bit sequence number, per-direction, starting at 0. Used for ordering, deduplication, and replay detection. Wraps at 2^32 — sessions MUST be renegotiated before wrap (implementations should renegotiate at 2^31 as a safety margin).
