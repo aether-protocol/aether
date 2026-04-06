@@ -34,13 +34,58 @@ public class AetherNode
     /// Proves to peers that StaticPublicKey belongs to this identity.
     /// </summary>
     public byte[] BindingSig { get; }
+    
+    /// <summary>
+    /// Capability descriptor advertised during discovery (Spec Part 3).
+    /// </summary>
+    public CapabilityDescriptor CapabilityDescriptor { get; }
 
     public AetherNode(string name)
     {
         Name = name;
+
+        // Generate keys (existing logic)
         (IdentityPrivateKey, IdentityPublicKey) = Crypto.GenerateIdentityKeypair();
         DeviceId = Crypto.DeriveDeviceId(IdentityPublicKey);
         (StaticPrivateKey, StaticPublicKey) = Crypto.GenerateEphemeralKeypair();
         BindingSig = Crypto.Ed25519Sign(IdentityPrivateKey, StaticPublicKey);
+
+        // Create a basic capability descriptor (Part 3)
+        CapabilityDescriptor = new CapabilityDescriptor
+        {
+            DeviceInfo = new DeviceInfo
+            {
+                Name = name,
+                SoftwareVersion = "0.1.0",
+                Manufacturer = "Aether Protocol Contributors"
+            },
+            CryptoCapabilities = new CryptoCapabilities
+            {
+                MaxMtu = 227,
+                SupportsChaCha20Poly1305 = false,
+                SupportsDelayedAck = true
+            }
+        };
+
+        // Add the standard Temperature service as an example (Spec Part 3 §7)
+        var tempService = new ServiceDescriptor
+        {
+            Id = new byte[16] { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1 }, // Temperature UUID
+            Version = "1.0.0"
+        };
+
+        tempService.Methods.Add(new MethodDescriptor
+        {
+            MethodId = 0x01,
+            Name = "read"
+        });
+
+        tempService.Events.Add(new EventDescriptor
+        {
+            EventId = 0x01,
+            Name = "reading"
+        });
+
+        CapabilityDescriptor.Services.Add(tempService);
     }
 }
