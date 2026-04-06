@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Aether.Sdk</RootNamespace>
+    <AssemblyName>Aether.Sdk</AssemblyName>
+    <Version>0.1.0-alpha</Version>
+    <Description>Aether Protocol .NET SDK – high-level client library for applications (wraps simulator today, host stack later)</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\sim\src\Aether.Core\Aether.Core.csproj" />
+  </ItemGroup>
+
+</Project>

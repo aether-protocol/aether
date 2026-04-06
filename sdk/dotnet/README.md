@@ -1,7 +1,14 @@
 # Aether .NET SDK
 
-C# SDK for building applications that communicate over Aether. Wraps the host stack (or simulator in development mode).
+Official C# SDK for building applications on top of the Aether protocol.
 
-## Status
+**Current status**: Early alpha – wraps the simulator (`Aether.Core`). Host-stack support coming soon.
 
-Not yet implemented. Will be scaffolded once the simulator is running.
+## Quick start
+
+```csharp
+using Aether.Sdk;
+
+var client = new AetherClient("MyPhone");
+var conn = await client.ConnectToSimulatorAsync();
+Console.WriteLine("Connected securely to Aether device!");
