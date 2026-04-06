@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using Aether.Core;
+using PeterO.Cbor;
 
 // ── Temperature service constants (Spec Part 3 §7) ───────────────────────────
 
@@ -9,7 +10,6 @@ static ReadOnlySpan<byte> TempServiceId() =>
 
 const byte   MethodRead     = 0x01;
 const byte   FlagRespExpect = 0x01;  // bit 0: response expected
-const byte   FlagIsResp     = 0x02;  // bit 1: this is a response
 const ushort CallId         = 0x002A;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -75,195 +75,185 @@ static byte[] BuildRpcRequest()
     return frame;
 }
 
-// Build the RPC response for Temperature.read.
-// CBOR payload: {"t": milliDegrees (i32), "unit": 0}
-// Layout: service_id(16) ‖ m_id(1) ‖ call_id(2 BE) ‖ flags(1) ‖ CBOR
-static byte[] BuildRpcResponse(int milliDegrees)
+// New parser for responses coming from ServiceLayer
+static (int MilliDegrees, byte Unit) ParseServiceLayerResponse(byte[] payload)
 {
-    // Hand-encoded CBOR map(2):
-    //   A2              map(2)
-    //   61 74           text(1) "t"
-    //   1A xx xx xx xx  uint32
-    //   64 75 6E 69 74  text(4) "unit"
-    //   00              uint(0)  Celsius
-    byte[] cbor = new byte[14];
-    cbor[0] = 0xA2;
-    cbor[1] = 0x61; cbor[2] = 0x74;
-    cbor[3] = 0x1A;
-    BinaryPrimitives.WriteInt32BigEndian(cbor.AsSpan(4), milliDegrees);
-    cbor[8]  = 0x64;
-    cbor[9]  = 0x75; cbor[10] = 0x6E; cbor[11] = 0x69; cbor[12] = 0x74;
-    cbor[13] = 0x00;
+    if (payload.Length < 20)
+        throw new InvalidDataException("Response too short");
 
-    byte[] frame = new byte[20 + cbor.Length];
-    TempServiceId().CopyTo(frame);
-    frame[16] = MethodRead;
-    BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(17), CallId);
-    frame[19] = FlagIsResp;
-    cbor.CopyTo(frame, 20);
-    return frame;
-}
+    // Skip the 20-byte RPC header
+    ReadOnlySpan<byte> cborData = payload.AsSpan(20);
 
-static (int MilliDegrees, byte Unit) ParseRpcResponse(byte[] payload)
-{
-    // Skip 20-byte RPC header; CBOR: A2 61 74 1A [4B temp] 64 "unit" [1B unit]
-    ReadOnlySpan<byte> cbor = payload.AsSpan(20);
-    if (cbor[0] != 0xA2 || cbor[1] != 0x61 || cbor[2] != 0x74 || cbor[3] != 0x1A)
-        throw new InvalidDataException("Unexpected CBOR structure in RPC response.");
-    int t    = BinaryPrimitives.ReadInt32BigEndian(cbor.Slice(4, 4));
-    byte unit = cbor[^1];
+    var cbor = CBORObject.DecodeFromBytes(cborData.ToArray());
+
+    int t = cbor["t"].AsInt32();
+    byte unit = (byte)cbor["unit"].AsInt32();
+
     return (t, unit);
 }
 
+{
 // ─────────────────────────────────────────────────────────────────────────────
 // Demo
 // ─────────────────────────────────────────────────────────────────────────────
 
-Console.WriteLine("═══════════════════════════════════════════════════════");
-Console.WriteLine("  AETHER PROTOCOL SIMULATOR — End-to-End Demo");
-Console.WriteLine("═══════════════════════════════════════════════════════");
-Console.WriteLine();
-
-// ── 1. Identity ───────────────────────────────────────────────────────────────
-
-var nodeA = new AetherNode("Node-A");
-var nodeB = new AetherNode("Node-B");
-
-Console.WriteLine("── Identity ────────────────────────────────────────────");
-foreach (var (node, label) in new[] { (nodeA, "A"), (nodeB, "B") })
-{
-    Console.WriteLine($"  Node-{label}");
-    Console.WriteLine($"    device_id   = {Hex(node.DeviceId)}");
-    Console.WriteLine($"    id_pub      = {Hex(node.IdentityPublicKey)}");
-    Console.WriteLine($"    static_pub  = {Hex(node.StaticPublicKey)}");
-    Console.WriteLine($"    binding_sig = {Hex(node.BindingSig, wrap: 32)}");
+    Console.WriteLine("═══════════════════════════════════════════════════════");
+    Console.WriteLine("  AETHER PROTOCOL SIMULATOR — End-to-End Demo");
+    Console.WriteLine("═══════════════════════════════════════════════════════");
     Console.WriteLine();
-}
+
+// ── 1. Identity & Capabilities ───────────────────────────────────────────────
+
+    var nodeA = new AetherNode("Node-A");
+    var nodeB = new AetherNode("Node-B");
+
+    Console.WriteLine("── Identity & Capabilities ─────────────────────────────");
+    foreach (var (node, label) in new[] { (nodeA, "A"), (nodeB, "B") })
+    {
+        Console.WriteLine($"  Node-{label}");
+        Console.WriteLine($"    device_id   = {Hex(node.DeviceId)}");
+        Console.WriteLine($"    id_pub      = {Hex(node.IdentityPublicKey)}");
+        Console.WriteLine($"    static_pub  = {Hex(node.StaticPublicKey)}");
+        Console.WriteLine($"    binding_sig = {Hex(node.BindingSig, wrap: 32)}");
+
+        // Show capability descriptor
+        Console.WriteLine($"    descriptor  = {node.CapabilityDescriptor.DeviceInfo.Name} " +
+                          $"(v{node.CapabilityDescriptor.Version}, " +
+                          $"{node.CapabilityDescriptor.Services.Count} services)");
+        Console.WriteLine();
+    }
+
+// Optional: Print the actual CBOR bytes of the descriptor (for debugging)
+    Console.WriteLine("  Capability Descriptor CBOR (first 64 bytes):");
+    var descBytes = nodeA.CapabilityDescriptor.ToCborBytes();
+    Console.WriteLine($"    {Hex(descBytes.AsSpan(0, Math.Min(64, descBytes.Length)))}");
+    Console.WriteLine();
 
 // ── 2. Link layer ─────────────────────────────────────────────────────────────
 
-var link = new LinkLayer();
-var epA  = link.EndpointA;
-var epB  = link.EndpointB;
+    var link = new LinkLayer();
+    var epA = link.EndpointA;
+    var epB = link.EndpointB;
 
 // ── 3. Noise XX handshake ─────────────────────────────────────────────────────
 
-Console.WriteLine("── Noise XX Handshake ──────────────────────────────────");
+    Console.WriteLine("── Noise XX Handshake ──────────────────────────────────");
 
-var hsA = new HandshakeInitiator(
-    nodeA.StaticPrivateKey, nodeA.StaticPublicKey,
-    nodeA.IdentityPublicKey, nodeA.BindingSig);
+    var hsA = new HandshakeInitiator(
+        nodeA.StaticPrivateKey, nodeA.StaticPublicKey,
+        nodeA.IdentityPublicKey, nodeA.BindingSig);
 
-var hsB = new HandshakeResponder(
-    nodeB.StaticPrivateKey, nodeB.StaticPublicKey,
-    nodeB.IdentityPublicKey, nodeB.BindingSig);
+    var hsB = new HandshakeResponder(
+        nodeB.StaticPrivateKey, nodeB.StaticPublicKey,
+        nodeB.IdentityPublicKey, nodeB.BindingSig);
 
 // msg1: A → B
-byte[] msg1 = hsA.Step();
-await epA.SendAsync(msg1);
-byte[] msg1recv = await epB.ReceiveAsync();
-Print("msg1  A→B", msg1recv);
-Console.WriteLine();
+    byte[] msg1 = hsA.Step();
+    await epA.SendAsync(msg1);
+    byte[] msg1recv = await epB.ReceiveAsync();
+    Print("msg1  A→B", msg1recv);
+    Console.WriteLine();
 
 // msg2: B → A
 // B processes msg1, builds msg2 (encrypts its own static_pub+identity_pub+binding_sig)
-byte[] msg2 = hsB.Step(msg1recv);
-await epB.SendAsync(msg2);
-byte[] msg2recv = await epA.ReceiveAsync();
-Print("msg2  B→A", msg2recv);
+    byte[] msg2 = hsB.Step(msg1recv);
+    await epB.SendAsync(msg2);
+    byte[] msg2recv = await epA.ReceiveAsync();
+    Print("msg2  B→A", msg2recv);
 
 // A processes msg2 — decrypts and verifies B's binding signature + device ID
-byte[] msg3 = hsA.Step(msg2recv);
-Console.WriteLine($"    binding_sig [OK] — A verified B's Ed25519 binding");
-Console.WriteLine($"    peer device_id  = {Hex(hsA.PeerDeviceId!)}");
-Console.WriteLine();
+    byte[] msg3 = hsA.Step(msg2recv);
+    Console.WriteLine($"    binding_sig [OK] — A verified B's Ed25519 binding");
+    Console.WriteLine($"    peer device_id  = {Hex(hsA.PeerDeviceId!)}");
+    Console.WriteLine();
 
 // msg3: A → B
 // A encrypts its own static_pub+identity_pub+binding_sig
-await epA.SendAsync(msg3);
-byte[] msg3recv = await epB.ReceiveAsync();
-Print("msg3  A→B", msg3recv);
+    await epA.SendAsync(msg3);
+    byte[] msg3recv = await epB.ReceiveAsync();
+    Print("msg3  A→B", msg3recv);
 
 // B processes msg3 — decrypts and verifies A's binding signature + device ID
-hsB.Step(msg3recv);
-Console.WriteLine($"    binding_sig [OK] — B verified A's Ed25519 binding");
-Console.WriteLine($"    peer device_id  = {Hex(hsB.PeerDeviceId!)}");
-Console.WriteLine();
+    hsB.Step(msg3recv);
+    Console.WriteLine($"    binding_sig [OK] — B verified A's Ed25519 binding");
+    Console.WriteLine($"    peer device_id  = {Hex(hsB.PeerDeviceId!)}");
+    Console.WriteLine();
 
 // ── Verify symmetric session state ────────────────────────────────────────────
 
-byte[] keyAtoB  = hsA.SessionKeyToSend!;
-byte[] keyBtoA  = hsA.SessionKeyToReceive!;
-byte[] nonceIvA = hsA.SessionNonceIV!;
+    byte[] keyAtoB = hsA.SessionKeyToSend!;
+    byte[] keyBtoA = hsA.SessionKeyToReceive!;
+    byte[] nonceIvA = hsA.SessionNonceIV!;
 
-Console.WriteLine($"  session key I→R : {Hex(keyAtoB)}");
-Console.WriteLine($"  session key R→I : {Hex(keyBtoA)}");
-Console.WriteLine($"  nonce IV        : {Hex(nonceIvA)}");
-Console.WriteLine();
+    Console.WriteLine($"  session key I→R : {Hex(keyAtoB)}");
+    Console.WriteLine($"  session key R→I : {Hex(keyBtoA)}");
+    Console.WriteLine($"  nonce IV        : {Hex(nonceIvA)}");
+    Console.WriteLine();
 
-bool keysMatch  = keyAtoB.SequenceEqual(hsB.SessionKeyToReceive!)
-               && keyBtoA.SequenceEqual(hsB.SessionKeyToSend!)
-               && nonceIvA.SequenceEqual(hsB.SessionNonceIV!);
+    bool keysMatch = keyAtoB.SequenceEqual(hsB.SessionKeyToReceive!)
+                     && keyBtoA.SequenceEqual(hsB.SessionKeyToSend!)
+                     && nonceIvA.SequenceEqual(hsB.SessionNonceIV!);
 
-Console.WriteLine(keysMatch
-    ? "  [OK] Both sides derived identical session keys and nonce IV."
-    : "  [FAIL] Session state mismatch — handshake is broken!");
-Console.WriteLine();
+    Console.WriteLine(keysMatch
+        ? "  [OK] Both sides derived identical session keys and nonce IV."
+        : "  [FAIL] Session state mismatch — handshake is broken!");
+    Console.WriteLine();
 
-if (!keysMatch) return;
+    if (!keysMatch) return;
 
-// ── 4. RPC: Temperature.read (A calls B) ──────────────────────────────────────
+// ── 4. Service Layer & RPC ───────────────────────────────────────────────────
 
-Console.WriteLine("── RPC: Temperature Service — read() ───────────────────");
-Console.WriteLine("  Service UUID: 00000000-0000-0000-0000-000000000001");
-Console.WriteLine();
+    Console.WriteLine("── Service Layer & RPC ─────────────────────────────────");
 
-// A sends encrypted request (counter=0, I→R direction)
-ulong ctrAtoB = 0;
-byte[] rpcReqPlain = BuildRpcRequest();
-byte[] rpcReqFrame = EncryptDataFrame(keyAtoB, nonceIvA, ctrAtoB, rpcReqPlain);
+    var serviceLayerB = new ServiceLayer(nodeB.CapabilityDescriptor);
 
-Console.WriteLine("  [Request]  A → B  (Temperature.read, no args)");
-Console.WriteLine($"    plaintext  : {Hex(rpcReqPlain)}");
-Console.WriteLine($"    nonce      : {Hex(BuildNonce(nonceIvA, ctrAtoB))}");
-Print("  DATA frame", rpcReqFrame);
-Console.WriteLine();
+    // Register Temperature.read handler on Node B
+    serviceLayerB.RegisterHandler(
+        new byte[16] { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1 }, // Temperature service UUID
+        0x01, // read method ID
+        _ => CBORObject.NewMap()
+            .Add("t", 21500)      // millidegrees Celsius
+            .Add("unit", 0));     // 0 = Celsius
 
-await epA.SendAsync(rpcReqFrame);
+    Console.WriteLine("  Temperature.read handler registered on Node-B");
 
-// B receives, decrypts, inspects
-byte[] reqRecv  = await epB.ReceiveAsync();
-byte[] reqPlain = DecryptDataFrame(hsB.SessionKeyToReceive!, nonceIvA, ctrAtoB, reqRecv);
-Console.WriteLine("  [B received and decrypted]");
-Console.WriteLine($"    service_id : {Hex(reqPlain.AsSpan(..16))}");
-Console.WriteLine($"    m_id       : 0x{reqPlain[16]:X2}  (read)");
-Console.WriteLine($"    call_id    : 0x{BinaryPrimitives.ReadUInt16BigEndian(reqPlain.AsSpan(17)):X4}");
-Console.WriteLine($"    flags      : 0x{reqPlain[19]:X2}  (response expected)");
-Console.WriteLine();
+    // Build and send RPC request (same header as before)
+    byte[] rpcRequest = BuildRpcRequest();   // your existing helper
 
-// B sends encrypted response (counter=0, R→I direction)
-const int TempMilliDegrees = 21500;
-ulong ctrBtoA = 0;
-byte[] rpcRspPlain = BuildRpcResponse(TempMilliDegrees);
-byte[] rpcRspFrame = EncryptDataFrame(keyBtoA, nonceIvA, ctrBtoA, rpcRspPlain);
+    ulong counter = 0;
+    byte[] encryptedRequest = EncryptDataFrame(keyAtoB, nonceIvA, counter, rpcRequest);
 
-Console.WriteLine($"  [Response]  B → A  (t={TempMilliDegrees} m°C = {TempMilliDegrees / 1000.0:F3}°C, unit=Celsius)");
-Console.WriteLine($"    plaintext  : {Hex(rpcRspPlain)}");
-Console.WriteLine($"    nonce      : {Hex(BuildNonce(nonceIvA, ctrBtoA))}");
-Print("  DATA frame", rpcRspFrame);
-Console.WriteLine();
+    await epA.SendAsync(encryptedRequest);
+    Console.WriteLine("  [Request sent] Temperature.read()");
 
-await epB.SendAsync(rpcRspFrame);
+    // B receives, decrypts and processes through ServiceLayer
+    byte[] receivedEncrypted = await epB.ReceiveAsync();
+    byte[] decryptedRequest = DecryptDataFrame(hsB.SessionKeyToReceive!, nonceIvA, counter, receivedEncrypted);
 
-// A receives, decrypts, parses result
-byte[] rspRecv  = await epA.ReceiveAsync();
-byte[] rspPlain = DecryptDataFrame(hsA.SessionKeyToReceive!, nonceIvA, ctrBtoA, rspRecv);
-var (t, unit)   = ParseRpcResponse(rspPlain);
-string unitName = unit switch { 0 => "Celsius", 1 => "Fahrenheit", 2 => "Kelvin", _ => $"unit={unit}" };
+    byte[]? responseBytes = serviceLayerB.ProcessRpcFrame(decryptedRequest);
 
-Console.WriteLine("═══════════════════════════════════════════════════════");
-Console.WriteLine($"  RESULT: Temperature = {t / 1000.0:F3} °{unitName[0]}  ({t} m°C)");
-Console.WriteLine("  Stack verified: Ed25519 identity → binding → Noise XX → AES-GCM RPC.");
-Console.WriteLine("═══════════════════════════════════════════════════════");
+    if (responseBytes != null)
+    {
+        ulong respCounter = 0;
+        byte[] encryptedResponse = EncryptDataFrame(keyBtoA, nonceIvA, respCounter, responseBytes);
+        await epB.SendAsync(encryptedResponse);
 
-link.Close();
+        // A receives and decrypts
+        byte[] rspEncrypted = await epA.ReceiveAsync();
+        byte[] rspDecrypted = DecryptDataFrame(hsA.SessionKeyToReceive!, nonceIvA, respCounter, rspEncrypted);
+
+        Console.WriteLine("  [Response received and decrypted]");
+
+        // New parser for ServiceLayer response (CBOR payload after 20-byte header)
+        var (tempMilli, unit) = ParseServiceLayerResponse(rspDecrypted);
+        string unitName = unit == 0 ? "Celsius" : "Unknown";
+
+        Console.WriteLine($"  RESULT: Temperature = {tempMilli / 1000.0:F3} °{unitName[0]} ({tempMilli} m°C)");
+    }
+    else
+    {
+        Console.WriteLine("  No response received.");
+    }
+
+    Console.WriteLine("  Stack verified: Ed25519 → Noise XX → AES-GCM → ServiceLayer RPC.");
+}
