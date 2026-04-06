@@ -84,8 +84,11 @@ public static class Crypto
 
         try
         {
+            // RFC 7748 §5: always clamp the private scalar before use.
+            // We clamp a copy so we never mutate the caller's array.
+            byte[] scalar = ClampX25519Scalar(privateKey);
             var agreement = new X25519Agreement();
-            agreement.Init(new X25519PrivateKeyParameters(privateKey));
+            agreement.Init(new X25519PrivateKeyParameters(scalar));
             byte[] secret = new byte[32];
             agreement.CalculateAgreement(new X25519PublicKeyParameters(peerPublicKey), secret, 0);
             return secret;
@@ -105,9 +108,17 @@ public static class Crypto
     /// A null or empty <paramref name="salt"/> is treated as a zero-filled byte array
     /// of hash length, per the RFC.
     /// </summary>
-    public static byte[] HkdfDerive(byte[] ikm, byte[]? salt, string info, int outputLength)
+    public static byte[] HkdfDerive(byte[] ikm, byte[]? salt, string info, int outputLength) =>
+        HkdfDerive(ikm, salt, string.IsNullOrEmpty(info) ? [] : Encoding.UTF8.GetBytes(info), outputLength);
+
+    /// <summary>
+    /// Internal overload accepting raw <paramref name="infoBytes"/> — used for RFC 5869 test vectors
+    /// where the info field is binary rather than a UTF-8 string.
+    /// </summary>
+    internal static byte[] HkdfDerive(byte[] ikm, byte[]? salt, byte[] infoBytes, int outputLength)
     {
         ArgumentNullException.ThrowIfNull(ikm);
+        ArgumentNullException.ThrowIfNull(infoBytes);
         if (outputLength <= 0 || outputLength > 255 * 32)
             throw new ArgumentOutOfRangeException(nameof(outputLength), "Output length must be between 1 and 8160 bytes.");
 
@@ -118,7 +129,6 @@ public static class Crypto
             prk = hmac.ComputeHash(ikm);
 
         // Expand: T(i) = HMAC-SHA256(PRK, T(i-1) || info || i)
-        byte[] infoBytes = string.IsNullOrEmpty(info) ? [] : Encoding.UTF8.GetBytes(info);
         int blocks = (outputLength + 31) / 32;
         byte[] okm = new byte[blocks * 32];
         byte[] t = [];
@@ -237,6 +247,20 @@ public static class Crypto
         }
         catch (CryptographicException) { throw; }
         catch (Exception ex) { throw new CryptographicException("Ed25519 verify failed.", ex); }
+    }
+
+    /// <summary>
+    /// Applies RFC 7748 §5 X25519 scalar clamping to a copy of <paramref name="scalar"/>.
+    /// Clears the three lowest bits of byte[0], clears the highest bit of byte[31],
+    /// and sets the second-highest bit of byte[31].
+    /// </summary>
+    private static byte[] ClampX25519Scalar(byte[] scalar)
+    {
+        byte[] clamped = (byte[])scalar.Clone();
+        clamped[0]  &= 0xF8;          // clear bits 0, 1, 2
+        clamped[31] &= 0x7F;          // clear bit 255
+        clamped[31] |= 0x40;          // set bit 254
+        return clamped;
     }
 
     private static void ValidateAesParams(byte[] key, byte[] nonce)

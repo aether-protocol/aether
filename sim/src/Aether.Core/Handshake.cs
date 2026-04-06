@@ -120,6 +120,7 @@ public sealed class HandshakeInitiator
     private readonly byte[] _staticPub;     // X25519 — transmitted in msg3 payload
     private readonly byte[] _identityPub;   // Ed25519 — transmitted in msg3 payload
     private readonly byte[] _bindingSig;    // Ed25519.sign(identity_priv, static_pub)
+    private readonly Func<(byte[], byte[])> _ephemeralKeyFactory;
     private byte[] _ePriv = [];             // ephemeral X25519 private key
     private byte[] _msg1  = [];
     private byte[] _msg2  = [];
@@ -136,15 +137,27 @@ public sealed class HandshakeInitiator
         byte[] staticPublicKey,
         byte[] identityPublicKey,
         byte[] bindingSig)
+        : this(staticPrivateKey, staticPublicKey, identityPublicKey, bindingSig,
+               Crypto.GenerateEphemeralKeypair) { }
+
+    /// <summary>Internal constructor for deterministic tests — injects a fixed ephemeral keypair.</summary>
+    internal HandshakeInitiator(
+        byte[] staticPrivateKey,
+        byte[] staticPublicKey,
+        byte[] identityPublicKey,
+        byte[] bindingSig,
+        Func<(byte[], byte[])> ephemeralKeyFactory)
     {
         ArgumentNullException.ThrowIfNull(staticPrivateKey);
         ArgumentNullException.ThrowIfNull(staticPublicKey);
         ArgumentNullException.ThrowIfNull(identityPublicKey);
         ArgumentNullException.ThrowIfNull(bindingSig);
-        _staticPriv  = staticPrivateKey;
-        _staticPub   = staticPublicKey;
-        _identityPub = identityPublicKey;
-        _bindingSig  = bindingSig;
+        ArgumentNullException.ThrowIfNull(ephemeralKeyFactory);
+        _staticPriv          = staticPrivateKey;
+        _staticPub           = staticPublicKey;
+        _identityPub         = identityPublicKey;
+        _bindingSig          = bindingSig;
+        _ephemeralKeyFactory = ephemeralKeyFactory;
     }
 
     // ── Public state ─────────────────────────────────────────────────────────
@@ -189,7 +202,7 @@ public sealed class HandshakeInitiator
     private byte[] Step0_BuildMsg1()
     {
         byte[] ePub;
-        (_ePriv, ePub) = Crypto.GenerateEphemeralKeypair();
+        (_ePriv, ePub) = _ephemeralKeyFactory();
         _msg1 = [H.Msg1Type, 0x00, .. ePub];
         return [.. _msg1];
     }
@@ -256,6 +269,7 @@ public sealed class HandshakeResponder
     private readonly byte[] _staticPub;     // X25519 — transmitted in msg2 payload
     private readonly byte[] _identityPub;   // Ed25519 — transmitted in msg2 payload
     private readonly byte[] _bindingSig;    // Ed25519.sign(identity_priv, static_pub)
+    private readonly Func<(byte[], byte[])> _ephemeralKeyFactory;
     private byte[] _ePriv = [];             // ephemeral X25519 private key
     private byte[] _kEE   = [];             // DH(e_R, e_I) — saved for step 1
     private byte[] _kES   = [];             // DH(s_R, e_I) — saved for step 1
@@ -274,15 +288,27 @@ public sealed class HandshakeResponder
         byte[] staticPublicKey,
         byte[] identityPublicKey,
         byte[] bindingSig)
+        : this(staticPrivateKey, staticPublicKey, identityPublicKey, bindingSig,
+               Crypto.GenerateEphemeralKeypair) { }
+
+    /// <summary>Internal constructor for deterministic tests — injects a fixed ephemeral keypair.</summary>
+    internal HandshakeResponder(
+        byte[] staticPrivateKey,
+        byte[] staticPublicKey,
+        byte[] identityPublicKey,
+        byte[] bindingSig,
+        Func<(byte[], byte[])> ephemeralKeyFactory)
     {
         ArgumentNullException.ThrowIfNull(staticPrivateKey);
         ArgumentNullException.ThrowIfNull(staticPublicKey);
         ArgumentNullException.ThrowIfNull(identityPublicKey);
         ArgumentNullException.ThrowIfNull(bindingSig);
-        _staticPriv  = staticPrivateKey;
-        _staticPub   = staticPublicKey;
-        _identityPub = identityPublicKey;
-        _bindingSig  = bindingSig;
+        ArgumentNullException.ThrowIfNull(ephemeralKeyFactory);
+        _staticPriv          = staticPrivateKey;
+        _staticPub           = staticPublicKey;
+        _identityPub         = identityPublicKey;
+        _bindingSig          = bindingSig;
+        _ephemeralKeyFactory = ephemeralKeyFactory;
     }
 
     // ── Public state ─────────────────────────────────────────────────────────
@@ -331,7 +357,7 @@ public sealed class HandshakeResponder
         _msg1 = [.. msg1];
 
         byte[] eRPub;
-        (_ePriv, eRPub) = Crypto.GenerateEphemeralKeypair();
+        (_ePriv, eRPub) = _ephemeralKeyFactory();
 
         // k_ee = DH(e_R, e_I)
         _kEE = Crypto.X25519KeyExchange(_ePriv, eIPub);

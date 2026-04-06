@@ -36,9 +36,66 @@ public class CapabilityDescriptor
 
     public static CapabilityDescriptor FromCbor(byte[] data)
     {
-        // Placeholder for full parsing
-        var cbor = CBORObject.DecodeFromBytes(data);
-        return new CapabilityDescriptor();
+        var map = CBORObject.DecodeFromBytes(data);
+        var descriptor = new CapabilityDescriptor();
+
+        if (map.ContainsKey("v"))
+            descriptor.Version = map["v"].AsInt32();
+
+        if (map.ContainsKey("di"))
+        {
+            var di = map["di"];
+            descriptor.DeviceInfo = new DeviceInfo
+            {
+                Name            = di.ContainsKey("n")  ? di["n"].AsString()  : "Aether Device",
+                SoftwareVersion = di.ContainsKey("sv") ? di["sv"].AsString() : "0.1.0",
+                HardwareVersion = di.ContainsKey("hv") ? di["hv"].AsString() : null,
+                Manufacturer    = di.ContainsKey("mn") ? di["mn"].AsString() : null,
+            };
+        }
+
+        if (map.ContainsKey("cc"))
+        {
+            var cc = map["cc"];
+            descriptor.CryptoCapabilities = new CryptoCapabilities
+            {
+                SupportsChaCha20Poly1305 = cc.ContainsKey("cc20") && cc["cc20"].AsBoolean(),
+                MaxMtu                   = cc.ContainsKey("mtu")  ? cc["mtu"].AsInt32() : 227,
+                SupportsDelayedAck       = cc.ContainsKey("dack") && cc["dack"].AsBoolean(),
+            };
+        }
+
+        if (map.ContainsKey("sv"))
+        {
+            foreach (var svcObj in map["sv"].Values)
+            {
+                var svc = new ServiceDescriptor
+                {
+                    Id      = svcObj.ContainsKey("id") ? svcObj["id"].GetByteString() : new byte[16],
+                    Version = svcObj.ContainsKey("v")  ? svcObj["v"].AsString()       : "1.0.0",
+                };
+
+                if (svcObj.ContainsKey("m"))
+                    foreach (var m in svcObj["m"].Values)
+                        svc.Methods.Add(new MethodDescriptor
+                        {
+                            MethodId = m.ContainsKey("mid") ? (byte)m["mid"].AsInt32() : (byte)0,
+                            Name     = m.ContainsKey("n")   ? m["n"].AsString()        : string.Empty,
+                        });
+
+                if (svcObj.ContainsKey("e"))
+                    foreach (var e in svcObj["e"].Values)
+                        svc.Events.Add(new EventDescriptor
+                        {
+                            EventId = e.ContainsKey("eid") ? (byte)e["eid"].AsInt32() : (byte)0,
+                            Name    = e.ContainsKey("n")   ? e["n"].AsString()        : string.Empty,
+                        });
+
+                descriptor.Services.Add(svc);
+            }
+        }
+
+        return descriptor;
     }
 }
 

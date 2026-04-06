@@ -7,45 +7,110 @@ namespace Aether.Sdk;
 /// </summary>
 public class AetherConnection : IAsyncDisposable
 {
-    private readonly AetherNode _local;
-    private readonly string _remoteName;
     private readonly LinkLayer _linkLayer;
-    private readonly LinkEndpoint _endpoint;
-    private byte[]? _txKey;
-    private byte[]? _rxKey;
-    private byte[]? _nonceIv;
+    private readonly LinkEndpoint _localEndpoint;
 
-    internal AetherConnection(AetherNode local, string remoteName)
+    private SessionChannel? _txChannel;
+    private SessionChannel? _rxChannel;
+
+    public AetherNode LocalNode { get; }
+
+    /// <summary>Peer's Ed25519 identity public key, verified during the handshake.</summary>
+    public byte[]? PeerIdentityPublicKey { get; private set; }
+
+    /// <summary>Peer's 6-byte device ID: SHA3-256(PeerIdentityPublicKey)[0:6].</summary>
+    public byte[]? PeerDeviceId { get; private set; }
+
+    internal AetherConnection(AetherNode local, LinkLayer linkLayer, LinkEndpoint localEndpoint)
     {
-        _local = local;
-        _remoteName = remoteName;
-        _linkLayer = new LinkLayer();
-        _endpoint = _linkLayer.EndpointA;
+        LocalNode      = local;
+        _linkLayer     = linkLayer;
+        _localEndpoint = localEndpoint;
     }
 
-    internal async Task PerformHandshakeAsync(CancellationToken ct)
+    // ── Handshake ─────────────────────────────────────────────────────────────
+
+    internal async Task RunAsInitiatorAsync(CancellationToken ct)
     {
-        // Full end-to-end handshake using the already-working core classes
-        var remoteNode = new AetherNode(_remoteName);
+        var hs = new HandshakeInitiator(
+            LocalNode.StaticPrivateKey, LocalNode.StaticPublicKey,
+            LocalNode.IdentityPublicKey, LocalNode.BindingSig);
 
-        var hsInit = new HandshakeInitiator(
-            _local.StaticPrivateKey, _local.StaticPublicKey,
-            _local.IdentityPublicKey, _local.BindingSig);
+        // msg1: send
+        byte[] msg1 = hs.Step();
+        await _localEndpoint.SendAsync(msg1, ct);
 
-        var hsResp = new HandshakeResponder(
-            remoteNode.StaticPrivateKey, remoteNode.StaticPublicKey,
-            remoteNode.IdentityPublicKey, remoteNode.BindingSig);
+        // msg2: receive, process → builds msg3
+        byte[] msg2 = await _localEndpoint.ReceiveAsync(ct);
+        byte[] msg3 = hs.Step(msg2);
 
-        // msg1
-        byte[] msg1 = hsInit.Step();
-        await _endpoint.SendAsync(msg1, ct);
+        // msg3: send
+        await _localEndpoint.SendAsync(msg3, ct);
 
-        // In a real SDK we would run the responder on a background task.
-        // For now we just demonstrate the API surface (the core already works perfectly in Program.cs).
-        // This class will be fleshed out once we have ServiceLayer.
-        _txKey = hsInit.SessionKeyToSend;
-        _rxKey = hsInit.SessionKeyToReceive;
-        _nonceIv = hsInit.SessionNonceIV;
+        SetSessionState(hs.SessionKeyToSend!, hs.SessionKeyToReceive!,
+                        hs.SessionNonceIV!,   hs.PeerIdentityPublicKey!,
+                        hs.PeerDeviceId!);
+    }
+
+    internal async Task RunAsResponderAsync(CancellationToken ct)
+    {
+        var hs = new HandshakeResponder(
+            LocalNode.StaticPrivateKey, LocalNode.StaticPublicKey,
+            LocalNode.IdentityPublicKey, LocalNode.BindingSig);
+
+        // msg1: receive
+        byte[] msg1 = await _localEndpoint.ReceiveAsync(ct);
+
+        // msg2: process msg1, send msg2
+        byte[] msg2 = hs.Step(msg1);
+        await _localEndpoint.SendAsync(msg2, ct);
+
+        // msg3: receive, process
+        byte[] msg3 = await _localEndpoint.ReceiveAsync(ct);
+        hs.Step(msg3);
+
+        SetSessionState(hs.SessionKeyToSend!, hs.SessionKeyToReceive!,
+                        hs.SessionNonceIV!,   hs.PeerIdentityPublicKey!,
+                        hs.PeerDeviceId!);
+    }
+
+    private void SetSessionState(byte[] txKey, byte[] rxKey, byte[] nonceIv,
+                                  byte[] peerIdPub, byte[] peerDeviceId)
+    {
+        _txChannel           = new SessionChannel(txKey, nonceIv);
+        _rxChannel           = new SessionChannel(rxKey, nonceIv);
+        PeerIdentityPublicKey = peerIdPub;
+        PeerDeviceId          = peerDeviceId;
+    }
+
+    // ── Data transfer ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Encrypts <paramref name="plaintext"/> and sends it to the peer.
+    /// </summary>
+    public async ValueTask SendAsync(byte[] plaintext, CancellationToken ct = default)
+    {
+        EnsureConnected();
+        byte[] frame = _txChannel!.Encrypt(plaintext);
+        await _localEndpoint.SendAsync(frame, ct);
+    }
+
+    /// <summary>
+    /// Receives and decrypts the next frame from the peer.
+    /// Throws <see cref="System.Security.Cryptography.CryptographicException"/> on
+    /// authentication failure or replay.
+    /// </summary>
+    public async ValueTask<byte[]> ReceiveAsync(CancellationToken ct = default)
+    {
+        EnsureConnected();
+        byte[] frame = await _localEndpoint.ReceiveAsync(ct);
+        return _rxChannel!.Decrypt(frame);
+    }
+
+    private void EnsureConnected()
+    {
+        if (_txChannel is null || _rxChannel is null)
+            throw new InvalidOperationException("Handshake has not completed.");
     }
 
     public ValueTask DisposeAsync()
