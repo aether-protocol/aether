@@ -92,6 +92,31 @@ public class ServiceLayer
         return header;
     }
 
+    /// <summary>
+    /// Builds an event frame for the given service and event (Spec Part 3 §6).
+    /// Event frame layout: service_id(16) ‖ event_id(1) ‖ call_id=0(2 BE) ‖ flags=0x04(1) ‖ CBOR payload
+    /// Flags bit 2 = 0x04 marks this as an event (not a request or response).
+    /// The caller is responsible for encrypting and transmitting the returned bytes.
+    /// </summary>
+    /// <param name="serviceId">16-byte service UUID.</param>
+    /// <param name="eventId">Event ID within the service.</param>
+    /// <param name="payload">CBOR-encoded event payload (e.g. temperature reading map).</param>
+    public static byte[] BuildEventFrame(byte[] serviceId, byte eventId, CBORObject payload)
+    {
+        ArgumentNullException.ThrowIfNull(serviceId);
+        if (serviceId.Length != 16) throw new ArgumentException("serviceId must be 16 bytes.", nameof(serviceId));
+        ArgumentNullException.ThrowIfNull(payload);
+
+        var header = new byte[20];
+        serviceId.CopyTo(header, 0);
+        header[16] = eventId;
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(17), 0x0000); // call_id unused
+        header[19] = 0x04; // flags: is_event
+
+        byte[] payloadBytes = payload.EncodeToBytes();
+        return [.. header, .. payloadBytes];
+    }
+
     private byte[] BuildErrorResponse(ushort callId, byte errorCode, string message)
     {
         var errorService = new byte[16]; // all 0xFF = error service

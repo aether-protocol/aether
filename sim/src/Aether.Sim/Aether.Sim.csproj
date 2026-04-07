@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Aether.Core\Aether.Core.csproj" />
+    <ProjectReference Include="..\..\..\sdk\dotnet\Aether.Sdk.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
