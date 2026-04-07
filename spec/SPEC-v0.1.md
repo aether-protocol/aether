@@ -1005,4 +1005,120 @@ For devices with descriptors approaching the limit, OPTIONAL fields (`"desc"`, `
 
 ---
 
-*End of Part 3. Future parts: Part 4 (Mesh Routing), Part 5 (Group Sessions), Part 6 (Enterprise Extensions)*
+*End of Part 3. Next part: Part 4 (Mesh Routing)*
+
+# Aether Protocol Specification
+## Part 4: Mesh Routing
+**Version:** 0.1-draft  
+**Status:** Working Draft  
+**Depends on:** Parts 1–3
+
+---
+
+## 1. Overview
+
+Aether is designed mesh-first. Any device can act as a router, forwarding frames for other nodes without requiring a central coordinator or infrastructure.
+
+The mesh uses **source-routed, hop-by-hop** forwarding with per-hop encryption. This gives:
+- End-to-end forward secrecy (each hop uses a fresh session key)
+- Resistance to traffic analysis (only the next hop is visible)
+- Support for battery-powered leaf nodes that sleep most of the time
+
+---
+
+## 2. Mesh Addressing
+
+Every frame carries:
+- **Source Device ID** (6 bytes) — the original sender
+- **Destination Device ID** (6 bytes) — the final recipient
+- **Hop List** (variable, 0–16 hops × 6 bytes) — the path the frame should take
+
+A device that is not the final destination treats the frame as a **forwarding request** and sends it to the next hop listed in the hop list (or drops it if the list is exhausted).
+
+---
+
+## 3. Route Discovery
+
+Route discovery is reactive (on-demand):
+
+1. Sender broadcasts a `ROUTE_REQ` frame containing the destination Device ID.
+2. Any node that knows a route (or is the destination) replies with a `ROUTE_RSP` containing a full hop list.
+3. The sender caches the route for a limited lifetime (default 5 minutes).
+
+Future versions may add proactive route maintenance and link-quality metrics (RSSI, ETX).
+
+---
+
+## 4. Per-Hop Encryption
+
+Each hop re-encrypts the payload with a fresh session key established with the *next* hop. This is achieved by running a lightweight Noise handshake (XX pattern, same as Part 1) between adjacent mesh nodes when a route is first used.
+
+The inner payload remains encrypted end-to-end with the original source-to-destination session key.
+
+---
+
+## 5. Fragmentation and Reassembly
+
+Mesh frames may traverse multiple links with different MTUs. Fragmentation is handled at the link layer (Part 2 §7) on every hop. Reassembly happens only at the final destination.
+
+---
+
+## 6. Loop Prevention and Duplicate Suppression
+
+- Each frame carries a 32-bit **Mesh Sequence Number** (incremented by the original source).
+- Nodes maintain a short-term seen-set per source (Device ID + sequence number).
+- Entries expire after 60 seconds.
+
+---
+
+*End of Part 4 (draft). Next: Part 5 — Group Sessions*
+
+# Aether Protocol Specification
+## Part 5: Group Sessions
+**Version:** 0.1-draft  
+**Status:** Working Draft  
+**Depends on:** Parts 1–4
+
+---
+
+## 1. Overview
+
+Group sessions allow one-to-many and many-to-many communication (e.g. a light switch controlling multiple bulbs, or a conference call).
+
+Two modes are supported:
+- **Sender-key** (most common): the sender distributes a single symmetric key to all group members.
+- **Ratchet-tree** (future, for large dynamic groups): each member maintains its own ratchet for forward secrecy.
+
+---
+
+## 2. Group Key Distribution
+
+A group is identified by a 16-byte Group ID. The creator of the group runs a Noise XX handshake with each member and sends the group key encrypted under the resulting session key.
+
+---
+
+*End of Part 5 (stub). Next: Part 6 — Enterprise Extensions*
+
+# Aether Protocol Specification
+## Part 6: Enterprise Extensions
+**Version:** 0.1-draft  
+**Status:** Working Draft  
+**Depends on:** Parts 1–5
+
+---
+
+## 1. Overview
+
+Enterprise features (provisioning, certificate-based identity, PKI integration, logging, access control lists) are deliberately separated so consumer devices remain lightweight.
+
+---
+
+## 2. Certificate-Based Identity (optional)
+
+Devices may present an X.509 certificate chain instead of (or in addition to) the raw Ed25519 key. The binding signature still covers the X25519 static key.
+
+---
+
+## 3. Provisioning and Key Escrow
+
+Enterprise deployments may use a provisioning server to distribute initial keys and revoke identities.
